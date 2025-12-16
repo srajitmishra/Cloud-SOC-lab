@@ -1,28 +1,37 @@
 # main.tf
 
 ################################################################################
-# 1. CloudTrail S3 Bucket and Policy
+# 1. AWS Identity & Data Sources
 ################################################################################
 
-# Create the S3 bucket for storing CloudTrail logs.
+data "aws_caller_identity" "current" {}
+
+################################################################################
+# 2. S3 Bucket for CloudTrail Logs
+################################################################################
+
 resource "aws_s3_bucket" "cloudtrail_bucket" {
-  bucket = var.s3_bucket_name
+  bucket        = var.s3_bucket_name
+  force_destroy = true
 
-  # Enable server-side encryption (SSE-S3) for logs at rest
-  server_side_encryption_configuration {
-    rule {
-      apply_server_side_encryption_by_default {
-        sse_algorithm = "AES256"
-      }
-    }
-  }
-
-  # Block public access to the bucket (essential security practice)
   tags = {
-    Name = "${var.trail_name}-logs"
+    Name        = "${var.trail_name}-logs"
+    Environment = "Audit"
   }
 }
 
+# SEPARATE RESOURCE: Encryption
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail_encryption" {
+  bucket = aws_s3_bucket.cloudtrail_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# SEPARATE RESOURCE: Public Access Block
 resource "aws_s3_bucket_public_access_block" "cloudtrail_bucket_access_block" {
   bucket = aws_s3_bucket.cloudtrail_bucket.id
 
@@ -32,7 +41,12 @@ resource "aws_s3_bucket_public_access_block" "cloudtrail_bucket_access_block" {
   restrict_public_buckets = true
 }
 
-# The bucket policy allows the CloudTrail service to write logs.
+# SEPARATE RESOURCE: Bucket Policy
+resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
+  bucket = aws_s3_bucket.cloudtrail_bucket.id
+  policy = data.aws_iam_policy_document.cloudtrail_bucket_policy.json
+}
+
 data "aws_iam_policy_document" "cloudtrail_bucket_policy" {
   statement {
     sid    = "AllowCloudTrailWrite"
@@ -43,19 +57,18 @@ data "aws_iam_policy_document" "cloudtrail_bucket_policy" {
       identifiers = ["cloudtrail.amazonaws.com"]
     }
 
-    actions = [
-      "s3:PutObject",
-      "s3:GetObject",
-    ]
-
-    resources = [
-      "${aws_s3_bucket.cloudtrail_bucket.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
-      "${aws_s3_bucket.cloudtrail_bucket.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}",
-    ]
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.cloudtrail_bucket.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"]
+    
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
   }
 
   statement {
-    sid    = "AllowCloudTrailServiceGet"
+    sid    = "AllowCloudTrailCheck"
     effect = "Allow"
 
     principals {
@@ -63,54 +76,35 @@ data "aws_iam_policy_document" "cloudtrail_bucket_policy" {
       identifiers = ["cloudtrail.amazonaws.com"]
     }
 
-    actions = [
-      "s3:GetBucketAcl",
-    ]
-
-    resources = [
-      aws_s3_bucket.cloudtrail_bucket.arn,
-    ]
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.cloudtrail_bucket.arn]
   }
 }
 
-resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
-  bucket = aws_s3_bucket.cloudtrail_bucket.id
-  policy = data.aws_iam_policy_document.cloudtrail_bucket_policy.json
-}
-
 ################################################################################
-# 2. AWS CloudTrail Configuration
+# 3. AWS CloudTrail Configuration
 ################################################################################
-
-# Required data source for getting the current AWS Account ID
-data "aws_caller_identity" "current" {}
-
-# Main CloudTrail resource
-# main.tf (Updated CloudTrail Resource)
 
 resource "aws_cloudtrail" "security_trail" {
   name                          = var.trail_name
   s3_bucket_name                = aws_s3_bucket.cloudtrail_bucket.id
-  include_global_service_events = true # Required for IAM logs
+  include_global_service_events = true # Required for IAM auditing
   is_multi_region_trail         = true
   enable_log_file_validation    = true
 
-  # SELECTOR 1: Capture all Management Events (IAM, Console logins, etc.)
+  # Capture all Management Events (IAM, Console Login, Security Group changes)
   event_selector {
     read_write_type           = "All"
     include_management_events = true
-
-    # This captures all general AWS API calls across the account
   }
 
-  # SELECTOR 2: Capture S3 Data Events (Object-level changes)
+  # Capture all S3 Data Events (Object uploads, deletions, etc.)
   event_selector {
     read_write_type           = "All"
-    include_management_events = false # Management events are handled by the block above
+    include_management_events = false
 
     data_resource {
       type   = "AWS::S3::Object"
-      # This captures data events for ALL buckets in the account
       values = ["arn:aws:s3:::"]
     }
   }
@@ -120,11 +114,9 @@ resource "aws_cloudtrail" "security_trail" {
     Environment = "Audit"
   }
 
-  depends_on = [aws_s3_bucket_policy.cloudtrail_bucket_policy]
-}
-
-  tags = {
-    Name = var.trail_name
-    Environment = "Audit"
-  }
+  # Ensure the bucket and policy are ready before the trail starts
+  depends_on = [
+    aws_s3_bucket_policy.cloudtrail_bucket_policy,
+    aws_s3_bucket_public_access_block.cloudtrail_bucket_access_block
+  ]
 }

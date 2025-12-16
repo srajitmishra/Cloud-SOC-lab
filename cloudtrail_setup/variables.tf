@@ -17,5 +17,5 @@ variable "s3_bucket_name" {
   type        = string
   # IMPORTANT: You must change the default to a unique name.
   # For example: "my-company-cloudtrail-logs-12345"
-  default     = "cloudtrail-logs-REPLACE-ME-WITH-UNIQUE-ID" 
+  default     = "cloudtrail-logs-soclab" 
 }

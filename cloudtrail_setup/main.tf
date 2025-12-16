@@ -86,40 +86,42 @@ resource "aws_s3_bucket_policy" "cloudtrail_bucket_policy" {
 data "aws_caller_identity" "current" {}
 
 # Main CloudTrail resource
+# main.tf (Updated CloudTrail Resource)
+
 resource "aws_cloudtrail" "security_trail" {
   name                          = var.trail_name
   s3_bucket_name                = aws_s3_bucket.cloudtrail_bucket.id
-
-  # CRUCIAL SECURITY SETTINGS
-  # 1. Enable logging globally (Multi-Region Trail)
+  include_global_service_events = true # Required for IAM logs
   is_multi_region_trail         = true
-  # 2. Include global services events (ESSENTIAL for IAM/Security Audit Logs)
-  include_global_service_events = true
-  # 3. Enable log file integrity validation (security best practice)
   enable_log_file_validation    = true
 
-  # 4. Management Event Selector (for IAM, EC2, VPC, etc. control plane logs)
-  # Logs ALL events (Read and Write), which includes all IAM and console actions.
-  management_event_selector {
-    read_write_type             = "All"
-    include_management_events   = true
-    # Exclude any events if necessary, but for a security audit, 'All' is best.
+  # SELECTOR 1: Capture all Management Events (IAM, Console logins, etc.)
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    # This captures all general AWS API calls across the account
   }
 
-  # 5. Data Event Selector (for S3 and other data plane changes)
-  # This records S3 object level actions (e.g., PutObject, DeleteObject), 
-  # which covers 'S3 bucket changes' and is security-crucial.
+  # SELECTOR 2: Capture S3 Data Events (Object-level changes)
   event_selector {
-    read_write_type = "All"
-    # This selector must *not* include management events
-    include_management_events = false
+    read_write_type           = "All"
+    include_management_events = false # Management events are handled by the block above
 
     data_resource {
-      type = "AWS::S3::Object"
-      # Target ALL S3 buckets in the account
-      values = ["arn:aws:s3:::"] 
+      type   = "AWS::S3::Object"
+      # This captures data events for ALL buckets in the account
+      values = ["arn:aws:s3:::"]
     }
   }
+
+  tags = {
+    Name        = var.trail_name
+    Environment = "Audit"
+  }
+
+  depends_on = [aws_s3_bucket_policy.cloudtrail_bucket_policy]
+}
 
   tags = {
     Name = var.trail_name
